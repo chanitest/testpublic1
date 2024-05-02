@@ -1,0 +1,192 @@
+version: "3.7"
+
+services:
+  containers-worker:
+    build:
+      context: .
+      args:
+        GIT_USER: ${GIT_USER}
+        GIT_TOKEN: ${GIT_TOKEN}
+    image: containers-worker
+    environment:
+      REDIS_ADDRESS: redis:6379
+      REDIS_PASSWORD: ""
+      REDIS_TTL_IN_HOURS: 1
+      REDIS_MAX_RETRIES: 3
+      RABBIT_CONNECTION_STRING: amqp://guest:guest@rabbitmq:5672/
+      RABBIT_TLS_SKIP_VERIFY: true
+      RABBIT_EXCHANGE_TOPIC: exchange.topic
+      RABBIT_RECONNECT_RETRIES: 3
+      RABBIT_RETRY_WAIT_DURATION: 10
+      WORKFLOW_ZEEBE_BROKER_ADDRESS: zeebe:26500
+      WORKFLOW_TIMEOUT_MIN: 1
+      SCAN_STATUS_WORKFLOW_TIMEOUT_MIN: 2
+      WORKFLOW_ZEEBE_TLS_ENABLE: false
+      WORKFLOW_ZEEBE_TLS_CA_PATH: ""
+      WORKFLOW_ZEEBE_AUTH_SERVER_URL: ""
+      WORKFLOW_ZEEBE_AUTH_CLIENT_ID: ""
+      WORKFLOW_ZEEBE_AUTH_CLIENT_SECRET: ""
+      WORKFLOW_ZEEBE_MAX_CONCURRENT_JOBS: 5
+      WORKFLOW_ZEEBE_MAX_CONCURRENT_STATUS_JOBS: 10
+      WORKFLOW_ZEEBE_NAMESPACE: containers-worker
+      WORKFLOW_ZEEBE_PROCESS_ID: 1
+
+      CONTAINERS_NEW_SCAN_JOB_TYPE: containers-scan-initiator
+      CONTAINERS_NEW_SCAN_TIMEOUT_IN_MINUTES: 2
+      CONTAINERS_NEW_SCAN_MAX_CONCURRENT_JOBS: 2
+      CONTAINERS_NEW_SCAN_RETURN_JOB_TIMEOUT_IN_MINUTES: 2
+
+      CONTAINERS_SCAN_STATUS_JOB_TYPE: containers-scan-status
+      CONTAINERS_SCAN_STATUS_TIMEOUT_IN_MINUTES: 2
+      CONTAINERS_SCAN_STATUS_MAX_CONCURRENT_JOBS: 2
+      CONTAINERS_SCAN_STATUS_RETURN_JOB_TIMEOUT_IN_MINUTES: 2
+
+      SCAN_STATUS_SERVICE_PORT: 4321
+      HEALTH_SERVICE_PORT: 4320
+      SERVER_PORT: 80
+
+      CONTAINERS_RABBIT_CONNECTION_STRING: amqp://guest:guest@rabbitmq:5672/
+      CONTAINERS_RABBIT_TLS_SKIP_VERIFY: true
+      CONTAINERS_RABBIT_EXCHANGE_TOPIC: containers.topic
+      CONTAINERS_RABBIT_INITIALIZE_SCAN_QUEUE: initialize-scan
+      CONTAINERS_RABBIT_ROUTING_KEY: containers.scan.initialize-scan
+      CONTAINERS_RABBIT_RECONNECT_RETRIES: 25
+      CONTAINERS_RABBIT_RETRY_WAIT_DURATION: 3000
+    networks:
+      - camunda-platform
+    depends_on:
+      zeebe:
+        condition: service_healthy
+
+  containers-worker-tests:
+    build:
+      context: ./integrationTests
+      dockerfile: Dockerfile
+      args:
+        GIT_USER: ${GIT_USER}
+        GIT_TOKEN: ${GIT_TOKEN}
+    image: containers-worker-tests
+    environment:
+      REDIS_ADDRESS: redis:6379
+      REDIS_PASSWORD: ""
+      WORKFLOW_ZEEBE_BROKER_ADDRESS: zeebe:26500
+      BPMN_FILE_LOCATION: /app/containers-scan.bpmn
+      RABBITMQ_ADDRESS: amqp://guest:guest@rabbitmq:5672/
+      GRPC_SERVER_ADDRESS: containers-worker:4321
+    networks:
+      - camunda-platform
+    depends_on:
+      containers-worker:
+        condition: service_started
+      zeebe:
+          condition: service_healthy
+
+  zeebe: # https://docs.camunda.io/docs/self-managed/platform-deployment/docker/#zeebe
+    image: camunda/zeebe:8.0.14
+    container_name: zeebe
+    ports:
+      - "26500:26500"
+      - "9600:9600"
+    environment: # https://docs.camunda.io/docs/self-managed/zeebe-deployment/configuration/environment-variables/
+      - ZEEBE_BROKER_EXPORTERS_ELASTICSEARCH_CLASSNAME=io.camunda.zeebe.exporter.ElasticsearchExporter
+      - ZEEBE_BROKER_EXPORTERS_ELASTICSEARCH_ARGS_URL=http://elasticsearch:9200
+      # default is 1000, see here: https://github.com/camunda/zeebe/blob/main/exporters/elasticsearch-exporter/src/main/java/io/camunda/zeebe/exporter/ElasticsearchExporterConfiguration.java#L259
+      - ZEEBE_BROKER_EXPORTERS_ELASTICSEARCH_ARGS_BULK_SIZE=1
+      # allow running with low disk space
+      - ZEEBE_BROKER_DATA_DISKUSAGECOMMANDWATERMARK=0.998
+      - ZEEBE_BROKER_DATA_DISKUSAGEREPLICATIONWATERMARK=0.999
+      - "JAVA_TOOL_OPTIONS=-Xms512m -Xmx512m"
+    restart: always
+    healthcheck:
+      test: [ "CMD-SHELL", "timeout 10s bash -c ':> /dev/tcp/127.0.0.1/9600' || exit 1" ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    volumes:
+      - zeebe:/usr/local/zeebe/data
+    networks:
+      - camunda-platform
+    depends_on:
+      - elasticsearch
+
+  elasticsearch: # https://hub.docker.com/_/elasticsearch
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.15.0
+    container_name: elasticsearch
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    environment:
+      - bootstrap.memory_lock=true
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      # allow running with low disk space
+      - cluster.routing.allocation.disk.threshold_enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    restart: always
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -f http://localhost:9200/_cat/health | grep -q green" ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    volumes:
+      - elastic:/usr/share/elasticsearch/data
+    networks:
+      - camunda-platform
+
+  redis:
+    image: redis:6.0.10-alpine
+    ports:
+      - 6379:6379
+    networks:
+      - camunda-platform
+
+  rabbitmq:
+    image: rabbitmq:3
+    container_name: rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    networks:
+      - camunda-platform
+    volumes:
+      - ./scripts/enabled_plugins:/etc/rabbitmq/enabled_plugins
+    healthcheck:
+      test: [ "CMD", "rabbitmq-diagnostics", "-q", "ping" ]
+      interval: 30s
+      timeout: 30s
+      retries: 3
+
+#  operate: # https://docs.camunda.io/docs/self-managed/platform-deployment/docker/#operate
+#    image: camunda/operate:8.0.14
+#    container_name: operate
+#    ports:
+#      - "8082:8080"
+#    environment: # https://docs.camunda.io/docs/self-managed/operate-deployment/configuration/
+#      - CAMUNDA_OPERATE_ZEEBE_GATEWAYADDRESS=zeebe:26500
+#      - CAMUNDA_OPERATE_ELASTICSEARCH_URL=http://elasticsearch:9200
+#      - CAMUNDA_OPERATE_ZEEBEELASTICSEARCH_URL=http://elasticsearch:9200
+#      - management.endpoints.web.exposure.include=health
+#      - management.endpoint.health.probes.enabled=true
+#    healthcheck:
+#      test: [ "CMD-SHELL", "wget -O - -q 'http://localhost:8080/actuator/health/readiness'" ]
+#      interval: 30s
+#      timeout: 1s
+#      retries: 5
+#      start_period: 30s
+#    networks:
+#      - camunda-platform
+#    depends_on:
+#      - zeebe
+#      - elasticsearch
+
+volumes:
+  zeebe:
+  elastic:
+
+networks:
+  camunda-platform:

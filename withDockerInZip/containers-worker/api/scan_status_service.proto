@@ -1,0 +1,51 @@
+// protoc scan_status_service.proto -Iapi -Ithird_party --go_out=plugins=grpc:./pkg/
+// protoc --go_out=./pkg/ --go-grpc_out=./pkg/ --proto_path=./api/ scan_status_service.proto
+
+syntax = "proto3";
+
+package scan_status;
+option go_package = "api/scan_status";
+import "google/protobuf/timestamp.proto";
+
+service ScanStatusService {
+  rpc UpdateScanStatus (UpdateScanStatusRequest) returns (UpdateScanStatusResponse);
+  rpc UpdateScanStatusDetails (UpdateScanStatusDetailsRequest) returns (UpdateScanStatusResponse);
+  rpc GetScanStatusDetails (GetScanStatusDetailsRequest) returns (GetScanStatusDetailsResponse);
+}
+
+message GetScanStatusDetailsRequest {
+  string id  = 1;
+}
+
+message GetScanStatusDetailsResponse {
+  string id  = 1;
+  string status = 2;
+  repeated StepStatus stepStatus = 3;
+  google.protobuf.Timestamp updateTime = 4;
+}
+
+message UpdateScanStatusRequest {
+  string id  = 1;
+  string status = 2;
+  string error = 3;
+  google.protobuf.Timestamp updateTime = 4;
+}
+
+message UpdateScanStatusResponse {
+  string updateStatus = 1;
+  string error = 2;
+}
+
+message UpdateScanStatusDetailsRequest {
+  string id  = 1;
+  string stepName = 2;
+  string status = 3;
+  string error = 4;
+  google.protobuf.Timestamp updateTime = 5;
+}
+
+message StepStatus {
+  string name  = 1;
+  string status = 2;
+  google.protobuf.Timestamp updateTime = 3;
+}
